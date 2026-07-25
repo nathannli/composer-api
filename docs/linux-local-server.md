@@ -8,7 +8,7 @@ Run API for Cursor as a headless OpenAI-compatible endpoint on Linux (Bun API + 
 Hermes / client
    │  Bearer: LOCAL_API_KEY (or Cursor key in direct mode)
    ▼
-Bun API  :8787
+Bun API  :8788
    GET  /health  /v1  /
    GET  /v1/models  /v1/models/{id}
    POST /v1/chat/completions
@@ -22,6 +22,8 @@ SDK bridge  :8792/sdk  (internal)
 ```
 
 Default bind is **loopback** (`HOST=127.0.0.1`). Only expose beyond localhost behind a reverse proxy you trust.
+
+Default API port is **8788** so it does not collide with **hermes-webui** on `:8787`. Override with `PORT` if needed. Bridge remains on **8792**.
 
 ## Quick start (bare metal)
 
@@ -48,9 +50,9 @@ bun run server
 Smoke:
 
 ```bash
-curl -s http://127.0.0.1:8787/health | jq .
-curl -s http://127.0.0.1:8787/v1/models | jq '.data[].id'
-curl -s http://127.0.0.1:8787/v1/chat/completions \
+curl -s http://127.0.0.1:8788/health | jq .
+curl -s http://127.0.0.1:8788/v1/models | jq '.data[].id'
+curl -s http://127.0.0.1:8788/v1/chat/completions \
   -H "authorization: Bearer $LOCAL_API_KEY" \
   -H "content-type: application/json" \
   -d '{"model":"composer-2.5","messages":[{"role":"user","content":"ping"}],"stream":false}'
@@ -70,7 +72,7 @@ bun run server:logs
 bun run server:down
 ```
 
-- API published on host `${PORT:-8787}`
+- API published on host `${PORT:-8788}`
 - Bridge is **not** published (compose network only)
 - Host folder mounts at `/workspace` inside the bridge
 
@@ -79,7 +81,7 @@ bun run server:down
 | Variable | Default | Meaning |
 |---|---|---|
 | `HOST` | `127.0.0.1` | Bind address (`0.0.0.0` in Docker api service) |
-| `PORT` | `8787` | API port |
+| `PORT` | `8788` | API port |
 | `CURSOR_SDK_BRIDGE_URL` | `http://127.0.0.1:8792/sdk` | Bridge endpoint |
 | `CURSOR_SDK_BRIDGE_TOKEN` | empty | Shared secret API → bridge |
 | `CURSOR_SDK_WORKING_DIRECTORY` | `process.cwd()` | Default agent cwd / tool root |
@@ -107,7 +109,7 @@ hermes config set --env CURSOR_LOCAL_API_KEY "$LOCAL_API_KEY"
 
 # model pointing at the local server (custom OpenAI-compatible)
 hermes config set model.provider custom
-hermes config set model.base_url http://127.0.0.1:8787/v1
+hermes config set model.base_url http://127.0.0.1:8788/v1
 hermes config set model.default composer-2.5
 # api key: prefer env reference if your Hermes build supports key_env;
 # otherwise set the gateway key the server expects:
@@ -122,7 +124,7 @@ model_aliases:
   cursor-composer:
     model: composer-2.5
     provider: custom
-    base_url: http://127.0.0.1:8787/v1
+    base_url: http://127.0.0.1:8788/v1
 ```
 
 Then `/model cursor-composer` or set it as the session default.
@@ -201,7 +203,7 @@ systemctl --user enable --now cursor-sdk-bridge cursor-api
 | Script | Action |
 |---|---|
 | `bun run server:bridge` | SDK bridge |
-| `bun run server` | OpenAI API on `:8787` |
+| `bun run server` | OpenAI API on `:8788` |
 | `bun run server:up` | Compose up |
 | `bun run server:down` | Compose down |
 | `bun run server:logs` | Follow logs |

@@ -35,7 +35,8 @@ import { encodeSse } from "../worker/sse";
 // Config
 // ---------------------------------------------------------------------------
 
-const PORT = parseInt(process.env.PORT || "8787", 10);
+// Default 8788 so bare-metal Linux doesn't collide with hermes-webui (:8787).
+const PORT = parseInt(process.env.PORT || "8788", 10);
 const HOST = process.env.HOST || process.env.CURSOR_API_HOST || "127.0.0.1";
 const BRIDGE_URL = process.env.CURSOR_SDK_BRIDGE_URL || "http://127.0.0.1:8792/sdk";
 const BRIDGE_TOKEN = process.env.CURSOR_SDK_BRIDGE_TOKEN || "";

@@ -76,11 +76,11 @@ For a headless OpenAI-compatible server on Linux (Bun API + SDK bridge), see
 ```bash
 # bridge + API (requires Bun + Cursor API key)
 bun run server:bridge   # :8792
-bun run server          # :8787  → http://127.0.0.1:8787/v1
+bun run server          # :8788  → http://127.0.0.1:8788/v1
 # or: bun run server:up  # docker compose
 ```
 
-Point Hermes (or any OpenAI client) at `http://127.0.0.1:8787/v1` with
+Point Hermes (or any OpenAI client) at `http://127.0.0.1:8788/v1` with
 `LOCAL_API_KEY` as the Bearer token when gateway auth is enabled.
 
 ## Legacy hosted-key flow (optional)
