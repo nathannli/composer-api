@@ -68,6 +68,21 @@ Release details live in [docs/production.md](docs/production.md).
 - Versioned DMGs, the latest DMG alias, and `appcast.xml` are uploaded to Cloudflare R2.
 - The Worker serves `/download`, `/releases/...`, and `/appcast.xml`.
 
+## Linux local server (Hermes / headless)
+
+For a headless OpenAI-compatible server on Linux (Bun API + SDK bridge), see
+[docs/linux-local-server.md](docs/linux-local-server.md).
+
+```bash
+# bridge + API (requires Bun + Cursor API key)
+bun run server:bridge   # :8792
+bun run server          # :8787  → http://127.0.0.1:8787/v1
+# or: bun run server:up  # docker compose
+```
+
+Point Hermes (or any OpenAI client) at `http://127.0.0.1:8787/v1` with
+`LOCAL_API_KEY` as the Bearer token when gateway auth is enabled.
+
 ## Legacy hosted-key flow (optional)
 
 The Worker also keeps a backward-compatible hosted-key flow: `POST /api/signup`

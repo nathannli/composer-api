@@ -4,11 +4,17 @@ services:
       context: .
       dockerfile: Dockerfile
       target: bridge
-    ports:
-      - "8792:8792"
+    # Bridge stays on the compose network only — do not publish 8792 to the host.
+    expose:
+      - "8792"
     environment:
-      - CURSOR_SDK_BRIDGE_HOST=0.0.0.0
-      - CURSOR_SDK_BRIDGE_PORT=8792
+      CURSOR_SDK_BRIDGE_HOST: "0.0.0.0"
+      CURSOR_SDK_BRIDGE_PORT: "8792"
+      CURSOR_SDK_BRIDGE_TOKEN: ${CURSOR_SDK_BRIDGE_TOKEN:-}
+      CURSOR_SDK_WORKING_DIRECTORY: ${CURSOR_SDK_WORKING_DIRECTORY:-/workspace}
+    volumes:
+      # Host project tree the agent can read/write via SDK tools.
+      - ${CURSOR_SDK_WORKSPACE_HOST:-.}:/workspace
     restart: unless-stopped
 
   api:
@@ -17,10 +23,15 @@ services:
       dockerfile: Dockerfile
       target: api
     ports:
-      - "8787:8787"
+      - "${PORT:-8787}:8787"
     environment:
-      - PORT=8787
-      - CURSOR_SDK_BRIDGE_URL=http://bridge:8792/sdk
+      HOST: "0.0.0.0"
+      PORT: "8787"
+      CURSOR_SDK_BRIDGE_URL: http://bridge:8792/sdk
+      CURSOR_SDK_BRIDGE_TOKEN: ${CURSOR_SDK_BRIDGE_TOKEN:-}
+      CURSOR_SDK_WORKING_DIRECTORY: ${CURSOR_SDK_WORKING_DIRECTORY:-/workspace}
+      CURSOR_API_KEY: ${CURSOR_API_KEY:-}
+      LOCAL_API_KEY: ${LOCAL_API_KEY:-}
     depends_on:
       - bridge
     restart: unless-stopped
