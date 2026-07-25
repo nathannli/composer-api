@@ -1,16 +1,22 @@
-FROM oven/bun:1.3.13-slim AS base
+# Node image for the bridge (Bun HTTP/2 breaks @cursor/sdk streaming).
+FROM node:22-bookworm-slim AS bridge-base
 WORKDIR /app
-COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
 
-FROM base AS bridge
+FROM bridge-base AS bridge
 COPY scripts ./scripts
 ENV CURSOR_SDK_BRIDGE_HOST=0.0.0.0
 ENV CURSOR_SDK_BRIDGE_PORT=8792
 ENV CURSOR_SDK_WORKING_DIRECTORY=/workspace
-CMD ["bun", "run", "scripts/cursor-sdk-local-agent-bridge.mjs"]
+CMD ["node", "scripts/cursor-sdk-local-agent-bridge.mjs"]
 
-FROM base AS api
+FROM oven/bun:1.3.13-slim AS api-base
+WORKDIR /app
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
+
+FROM api-base AS api
 COPY server ./server
 COPY worker ./worker
 ENV HOST=0.0.0.0

@@ -27,7 +27,11 @@ Default API port is **8788** so it does not collide with **hermes-webui** on `:8
 
 ## Quick start (bare metal)
 
-Requirements: Node ≥ 18 (for the SDK), [Bun](https://bun.sh) ≥ 1.3, a Cursor user API key.
+Requirements: Node ≥ 18 (for the SDK bridge — **do not run the bridge under Bun**),
+[Bun](https://bun.sh) ≥ 1.3 (OpenAI facade only), a Cursor user API key.
+
+Bun’s HTTP/2 client hits `NGHTTP2_FRAME_SIZE_ERROR` with `@cursor/sdk`; always use
+`node` / `bun run server:bridge` (which invokes Node) for the bridge.
 
 ```bash
 cp .env.example .env

@@ -19,7 +19,7 @@
     "sdk:opencode-bridge": "node scripts/cursor-sdk-local-agent-bridge.mjs",
     "sdk:responses": "node scripts/cursor-sdk-responses-proxy.mjs",
     "server": "bun run server/index.ts",
-    "server:bridge": "bun run scripts/cursor-sdk-local-agent-bridge.mjs",
+    "server:bridge": "node scripts/cursor-sdk-local-agent-bridge.mjs",
     "server:up": "docker compose up --build -d",
     "server:down": "docker compose down",
     "server:logs": "docker compose logs -f api bridge",
