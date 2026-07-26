@@ -250,7 +250,7 @@ Scripts:
 
 ## Research sources
 
-- Cursor SDK package: `@cursor/sdk@1.0.13`
+- Cursor SDK package: `@cursor/sdk@1.0.24`
 - Cursor SDK TypeScript docs: https://cursor.com/docs/api/sdk/typescript
 - Cursor Composer 2.5 changelog: https://cursor.com/changelog/composer-2-5
 - Cursor Grok 4.5 docs: https://cursor.com/docs/models/grok-4-5
