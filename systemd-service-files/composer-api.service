@@ -1,0 +1,17 @@
+[Unit]
+Description=Composer API and Cursor SDK bridge
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/data/personal/composer-api
+EnvironmentFile=-%h/data/personal/composer-api/.env
+ExecStart=%h/.local/bin/composer-api
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+KillMode=control-group
+
+[Install]
+WantedBy=default.target
