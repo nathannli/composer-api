@@ -76,6 +76,60 @@ const CURSOR_MODEL_PRICING: Record<string, CursorModelPricing> = {
   "grok-4-5-fast": { input: 4, output: 18, source: "https://cursor.com/blog/grok-4-5" }
 };
 
+// Context windows for models that do not expose a catalog `context` parameter.
+// Source: pi-cursor-sdk bundled table (src/bundled-context-windows.ts), generated
+// from Cursor SDK checkpoint tokenDetails.maxTokens (default/non-Max mode).
+// Live path in pi-cursor-sdk: after a successful run, checkpointStore.loadLatest()
+// .tokenDetails.maxTokens is cached; discovery does not probe models at startup.
+const DEFAULT_CONTEXT_LENGTH = 200_000;
+const CURSOR_MODEL_CONTEXT_LENGTH: Record<string, number> = {
+  default: DEFAULT_CONTEXT_LENGTH,
+  auto: DEFAULT_CONTEXT_LENGTH,
+  "claude-haiku-4-5": 200_000,
+  "claude-opus-4-5": 200_000,
+  "composer-1.5": 200_000,
+  "composer-2": 200_000,
+  "composer-2.5": 200_000,
+  "composer-2.5-sdk": 200_000,
+  "composer-2-5": 200_000,
+  "composer-2.5-fast": 200_000,
+  "composer-2-5-fast": 200_000,
+  "composer-latest": 200_000,
+  "gemini-2.5-flash": 200_000,
+  "gemini-3-flash": 200_000,
+  "gemini-3.1-pro": 200_000,
+  "gemini-3.5-flash": 200_000,
+  "gpt-5-mini": 272_000,
+  "gpt-5.1": 272_000,
+  "gpt-5.1-codex-max": 272_000,
+  "gpt-5.1-codex-mini": 272_000,
+  "gpt-5.2": 272_000,
+  "gpt-5.2-codex": 272_000,
+  "gpt-5.3-codex": 272_000,
+  "gpt-5.3-codex-spark": 128_000,
+  "gpt-5.4-mini": 272_000,
+  "gpt-5.4-nano": 272_000,
+  "gpt-5.5@272k": 272_000,
+  "grok-4-20": 200_000,
+  // Not in the 2026-05-18 pi snapshot; use default non-Max window until a
+  // checkpoint override is collected for these Cursor model ids.
+  "grok-4.3": DEFAULT_CONTEXT_LENGTH,
+  "grok-4.5": DEFAULT_CONTEXT_LENGTH,
+  "grok-4-5": DEFAULT_CONTEXT_LENGTH,
+  "grok-4.5-fast": DEFAULT_CONTEXT_LENGTH,
+  "grok-4-5-fast": DEFAULT_CONTEXT_LENGTH,
+  "grok-build-0.1": DEFAULT_CONTEXT_LENGTH,
+  "kimi-k2.5": 262_000
+};
+
+function contextLengthForModel(modelId: string, contextWindows: Record<string, number> = {}): number {
+  const key = modelId.trim().toLowerCase();
+  const baseKey = key.replace(/-fast$/, "");
+  const learned = contextWindows[key] ?? contextWindows[baseKey];
+  if (Number.isInteger(learned) && learned > 0) return learned;
+  return CURSOR_MODEL_CONTEXT_LENGTH[key] ?? DEFAULT_CONTEXT_LENGTH;
+}
+
 const SYSTEM_DIRECTIVE = [
   "You are serving an OpenAI-compatible API request through Cursor Composer.",
   "Answer the user directly in chat style.",
@@ -627,33 +681,65 @@ export function responseDoneEvents(input: {
   ];
 }
 
-export function modelList(options: { opencode?: boolean; sdk?: boolean } = {}): Record<string, unknown> {
+export function parseModelAllowlist(value: string | undefined): ReadonlySet<string> | undefined {
+  const ids = value
+    ?.split(",")
+    .map((id) => id.trim().toLowerCase())
+    .filter(Boolean);
+  return ids?.length ? new Set(ids) : undefined;
+}
+
+export function assertModelAllowed(modelId: string, allowedModelIds: Iterable<string> | undefined): void {
+  if (!allowedModelIds) return;
+  const allowed = allowedModelIds instanceof Set
+    ? allowedModelIds
+    : new Set(Array.from(allowedModelIds, (id) => id.trim().toLowerCase()));
+  if (allowed.has(modelId.trim().toLowerCase())) return;
+  throw new HttpError(`The model '${modelId}' does not exist`, 404, "model_not_found", "model");
+}
+
+export function modelList(options: {
+  opencode?: boolean;
+  sdk?: boolean;
+  contextWindows?: Record<string, number>;
+  allowedModelIds?: Iterable<string>;
+} = {}): Record<string, unknown> {
+  const item = (id: string, name: string) => modelItem(id, name, {
+    opencode: options.opencode,
+    contextWindows: options.contextWindows
+  });
+  const allowedModelIds = options.allowedModelIds
+    ? new Set(Array.from(options.allowedModelIds, (id) => id.trim().toLowerCase()).filter(Boolean))
+    : undefined;
+  const data = [
+    item("default", "Auto"),
+    item("composer-2.5", options.opencode ? "Composer 2.5" : "Cursor Composer 2.5"),
+    ...(options.sdk ? [item("composer-2.5-sdk", "Composer 2.5 SDK Harness")] : []),
+    item("composer-2.5-fast", "Cursor Composer 2.5 Fast"),
+    item("composer-2", "Cursor Composer 2"),
+    item("composer-latest", "Cursor Composer latest alias"),
+    item("gpt-5.3-codex", "Codex 5.3"),
+    item("gpt-5.2-codex", "Codex 5.2"),
+    item("gpt-5.1-codex-max", "Codex 5.1 Max"),
+    item("gpt-5.1-codex-mini", "Codex 5.1 Mini"),
+    item("gpt-5.2", "GPT-5.2"),
+    item("gpt-5.1", "GPT-5.1"),
+    item("gpt-5-mini", "GPT-5 Mini"),
+    item("gemini-3.1-pro", "Gemini 3.1 Pro"),
+    item("gemini-3.5-flash", "Gemini 3.5 Flash"),
+    item("gemini-3-flash", "Gemini 3 Flash"),
+    item("gemini-2.5-flash", "Gemini 2.5 Flash"),
+    item("grok-build-0.1", "Grok Build 0.1"),
+    item("grok-4.3", "Grok 4.3"),
+    item("grok-4.5", "Grok 4.5"),
+    item("grok-4.5-fast", "Grok 4.5 Fast"),
+    item("kimi-k2.5", "Kimi K2.5")
+  ];
   return {
     object: "list",
-    data: [
-      modelItem("default", "Auto"),
-      modelItem("composer-2.5", options.opencode ? "Composer 2.5" : "Cursor Composer 2.5"),
-      ...(options.sdk ? [modelItem("composer-2.5-sdk", "Composer 2.5 SDK Harness")] : []),
-      modelItem("composer-2.5-fast", "Cursor Composer 2.5 Fast"),
-      modelItem("composer-2", "Cursor Composer 2"),
-      modelItem("composer-latest", "Cursor Composer latest alias"),
-      modelItem("gpt-5.3-codex", "Codex 5.3"),
-      modelItem("gpt-5.2-codex", "Codex 5.2"),
-      modelItem("gpt-5.1-codex-max", "Codex 5.1 Max"),
-      modelItem("gpt-5.1-codex-mini", "Codex 5.1 Mini"),
-      modelItem("gpt-5.2", "GPT-5.2"),
-      modelItem("gpt-5.1", "GPT-5.1"),
-      modelItem("gpt-5-mini", "GPT-5 Mini"),
-      modelItem("gemini-3.1-pro", "Gemini 3.1 Pro"),
-      modelItem("gemini-3.5-flash", "Gemini 3.5 Flash"),
-      modelItem("gemini-3-flash", "Gemini 3 Flash"),
-      modelItem("gemini-2.5-flash", "Gemini 2.5 Flash"),
-      modelItem("grok-build-0.1", "Grok Build 0.1"),
-      modelItem("grok-4.3", "Grok 4.3"),
-      modelItem("grok-4.5", "Grok 4.5"),
-      modelItem("grok-4.5-fast", "Grok 4.5 Fast"),
-      modelItem("kimi-k2.5", "Kimi K2.5")
-    ]
+    data: allowedModelIds
+      ? data.filter((model) => allowedModelIds.has(model.id.toLowerCase()))
+      : data
   };
 }
 
@@ -736,15 +822,35 @@ function normalizeSdkToolCall(toolCall: CursorToolCall): CursorToolCall {
   return toolCall;
 }
 
-function modelItem(id: string, name: string) {
+function modelItem(id: string, name: string, options: {
+  opencode?: boolean;
+  contextWindows?: Record<string, number>;
+} = {}) {
   const pricing = pricingForModel(id);
+  const contextLength = contextLengthForModel(id, options.contextWindows);
   return {
     id,
     object: "model",
     created: 1779148800,
     owned_by: "cursor",
     name,
-    ...(pricing ? { cost: { input: pricing.input, output: pricing.output } } : {})
+    // Hermes and other OpenAI-compatible clients probe these keys on /v1/models.
+    context_length: contextLength,
+    context_window: contextLength,
+    max_model_len: contextLength,
+    // OpenCode expects its catalog's cost values in USD per million tokens.
+    // Generic OpenAI-compatible catalogs (including Hermes) expect pricing
+    // prompt/completion values in USD per token.
+    ...(pricing && options.opencode
+      ? { cost: { input: pricing.input, output: pricing.output } }
+      : pricing
+        ? {
+            pricing: {
+              prompt: String(pricing.input / 1_000_000),
+              completion: String(pricing.output / 1_000_000)
+            }
+          }
+        : {})
   };
 }
 

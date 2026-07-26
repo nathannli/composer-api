@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { spawn, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   bridgePrompt,
+  checkpointContextWindow,
   clientForwardingMcpServerSource,
   clientMcpToolDefinitions,
   localAgentCreateOptions,
@@ -14,6 +18,7 @@ import {
   normalizeSDKToolCall,
   openAiError,
   runExclusiveForAgent,
+  saveCachedContextWindow,
   sdkRunFailureSummary,
   statusFromError,
   toolCallFromDelta,
@@ -23,6 +28,31 @@ import {
 const bridgeScriptPath = fileURLToPath(new URL("./cursor-sdk-local-agent-bridge.mjs", import.meta.url));
 
 describe("Cursor SDK local-agent bridge", () => {
+  it("extracts positive checkpoint maxTokens values", () => {
+    expect(checkpointContextWindow({ tokenDetails: { maxTokens: 262_000 } })).toBe(262_000);
+    expect(checkpointContextWindow({ tokenDetails: { maxTokens: 0 } })).toBeUndefined();
+    expect(checkpointContextWindow({ tokenDetails: { maxTokens: "262000" } })).toBeUndefined();
+  });
+
+  it("persists learned context windows without replacing other model observations", () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "composer-context-windows-"));
+    const cachePath = path.join(directory, "context-windows.json");
+    try {
+      saveCachedContextWindow(cachePath, "grok-4.5", 384_000);
+      saveCachedContextWindow(cachePath, "composer-2.5", 246_000);
+
+      expect(JSON.parse(readFileSync(cachePath, "utf8"))).toEqual({
+        contextWindows: {
+          "composer-2.5": 246_000,
+          "grok-4.5": 384_000
+        }
+      });
+      expect(statSync(cachePath).mode & 0o777).toBe(0o600);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("classifies retryable Cursor SDK upstream capacity errors", () => {
     expect(isRetryableSDKRunError(new Error("Server at capacity"))).toBe(true);
     expect(isRetryableSDKRunError({ cause: { isRetryable: true } })).toBe(true);

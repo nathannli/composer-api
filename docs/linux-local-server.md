@@ -89,6 +89,8 @@ bun run server:down
 | `CURSOR_SDK_BRIDGE_URL` | `http://127.0.0.1:8792/sdk` | Bridge endpoint |
 | `CURSOR_SDK_BRIDGE_TOKEN` | empty | Shared secret API → bridge |
 | `CURSOR_SDK_WORKING_DIRECTORY` | `process.cwd()` | Default agent cwd / tool root |
+| `CURSOR_SDK_CONTEXT_WINDOWS_FILE` | `.cursor-sdk-context-windows.json` | Shared mode-600 cache learned from completed-run checkpoints |
+| `COMPOSER_API_MODELS` | empty | Optional comma-separated model allowlist; filters discovery and rejects unlisted Chat/Responses requests |
 | `CURSOR_API_KEY` | empty | Cursor secret kept on the server |
 | `LOCAL_API_KEY` | empty | Optional gateway key for clients |
 
@@ -140,6 +142,16 @@ Useful model ids from `GET /v1/models`:
 - `grok-4.5`
 - `grok-4.5-fast`
 - plus other Cursor-routed ids advertised by the list
+
+To control the emitted catalog, set a comma-separated allowlist and restart the API server:
+
+```bash
+COMPOSER_API_MODELS=composer-2.5,composer-2.5-fast,grok-4.5
+```
+
+When unset or blank, the full bundled catalog is advertised. When set, the same
+allowlist also applies to `POST /v1/chat/completions` and `POST /v1/responses`;
+unlisted model IDs return `404 model_not_found` before the SDK bridge is called.
 
 ### What Hermes needs (minimum)
 

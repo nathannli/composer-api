@@ -1,7 +1,14 @@
 #!/usr/bin/env node
-import { Agent } from "@cursor/sdk";
+import { Agent, createAgentPlatform } from "@cursor/sdk";
 import crypto from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync
+} from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import readline from "node:readline";
@@ -12,6 +19,10 @@ const repoRoot = path.resolve(scriptDir, "..");
 
 loadEnvFile(path.join(repoRoot, ".env"));
 loadEnvFile(path.join(process.cwd(), ".env"));
+
+const contextWindowCachePath = path.resolve(
+  process.env.CURSOR_SDK_CONTEXT_WINDOWS_FILE || path.join(repoRoot, ".cursor-sdk-context-windows.json")
+);
 
 const host = process.env.CURSOR_SDK_BRIDGE_HOST || "127.0.0.1";
 const port = parseInteger(process.env.CURSOR_SDK_BRIDGE_PORT, 8792);
@@ -346,13 +357,17 @@ async function runLocalAgentBody(input, onRun, onEvent) {
     if (agentEntry) evictAgent(agentEntry.cacheKey, agentEntry.agent);
     throw sdkRunFailureError(result);
   }
+  const contextWindow = agentEntry
+    ? await learnContextWindowFromCheckpoint(agentEntry.agent.agentId, input.model, input.workingDirectory)
+    : undefined;
   if (!text && typeof result.result === "string") text = result.result;
   return {
     text: stripFinalMarker(text),
     toolCalls: [],
     agentID: agentEntry?.agent.agentId || "",
     runID: run.id,
-    status: result.status
+    status: result.status,
+    ...(contextWindow ? { contextWindow } : {})
   };
 }
 
@@ -2016,6 +2031,51 @@ function normalizeModel(model) {
   if (normalized === "grok-4.5" || normalized === "grok-4-5") return "grok-4.5";
   if (normalized === "grok-4.5-fast" || normalized === "grok-4-5-fast") return "grok-4.5-fast";
   return raw;
+}
+
+export function checkpointContextWindow(checkpoint) {
+  const maxTokens = checkpoint?.tokenDetails?.maxTokens;
+  return Number.isInteger(maxTokens) && maxTokens > 0 ? maxTokens : undefined;
+}
+
+export function saveCachedContextWindow(filePath, modelId, contextWindow) {
+  const normalizedModel = normalizeModel(typeof modelId === "string" ? modelId : "");
+  if (!normalizedModel || !Number.isInteger(contextWindow) || contextWindow <= 0) return;
+
+  let current = {};
+  try {
+    const parsed = JSON.parse(readFileSync(filePath, "utf8"));
+    if (parsed && typeof parsed.contextWindows === "object" && !Array.isArray(parsed.contextWindows)) {
+      current = parsed.contextWindows;
+    }
+  } catch {}
+
+  const contextWindows = Object.fromEntries(
+    Object.entries({ ...current, [normalizedModel]: contextWindow })
+      .filter(([, value]) => Number.isInteger(value) && value > 0)
+      .sort(([left], [right]) => left.localeCompare(right))
+  );
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(temporaryPath, `${JSON.stringify({ contextWindows }, null, 2)}\n`, { mode: 0o600 });
+  renameSync(temporaryPath, filePath);
+  chmodSync(filePath, 0o600);
+}
+
+async function learnContextWindowFromCheckpoint(agentId, modelId, workingDirectory) {
+  try {
+    const platform = await createAgentPlatform({
+      workspaceRef: workingDirectory,
+      scopedWorkspaceRef: workingDirectory
+    });
+    const checkpoint = await platform.checkpointStore.loadLatest(agentId);
+    const contextWindow = checkpointContextWindow(checkpoint);
+    if (contextWindow) saveCachedContextWindow(contextWindowCachePath, modelId, contextWindow);
+    return contextWindow;
+  } catch (error) {
+    console.warn(`Could not learn Cursor context window from checkpoint: ${errorMessage(error)}`);
+    return undefined;
+  }
 }
 
 function sdkModelSelection(model) {

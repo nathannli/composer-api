@@ -1,4 +1,7 @@
 import { resolveCursorModel } from "../worker/cursor";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   bearerToken,
   errorResponse,
@@ -12,12 +15,14 @@ import {
   unauthorized
 } from "../worker/http";
 import {
+  assertModelAllowed,
   chatChunk,
   chatCompletionResponse,
   chatUsageChunk,
   completionCharsFromOutput,
   doneChunk,
   modelList,
+  parseModelAllowlist,
   prepareChatRequest,
   prepareResponsesRequest,
   responseCreatedEvents,
@@ -40,6 +45,11 @@ const PORT = parseInt(process.env.PORT || "8788", 10);
 const HOST = process.env.HOST || process.env.CURSOR_API_HOST || "127.0.0.1";
 const BRIDGE_URL = process.env.CURSOR_SDK_BRIDGE_URL || "http://127.0.0.1:8792/sdk";
 const BRIDGE_TOKEN = process.env.CURSOR_SDK_BRIDGE_TOKEN || "";
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const CONTEXT_WINDOW_CACHE_FILE = path.resolve(
+  process.env.CURSOR_SDK_CONTEXT_WINDOWS_FILE || path.join(REPO_ROOT, ".cursor-sdk-context-windows.json")
+);
+const ALLOWED_MODEL_IDS = parseModelAllowlist(process.env.COMPOSER_API_MODELS);
 /** Default agent cwd when the request does not imply one. */
 const DEFAULT_WORKING_DIRECTORY = resolveDefaultWorkingDirectory();
 /**
@@ -63,6 +73,31 @@ function resolveDefaultWorkingDirectory(): string {
     process.env.CURSOR_SDK_PROXY_CWD?.trim();
   if (configured) return configured;
   return process.cwd();
+}
+
+function cachedContextWindows(): Record<string, number> {
+  try {
+    const parsed = JSON.parse(readFileSync(CONTEXT_WINDOW_CACHE_FILE, "utf8")) as {
+      contextWindows?: Record<string, unknown>;
+    };
+    return Object.fromEntries(
+      Object.entries(parsed.contextWindows ?? {})
+        .filter((entry): entry is [string, number] => (
+          typeof entry[1] === "number" && Number.isInteger(entry[1]) && entry[1] > 0
+        ))
+        .map(([model, contextWindow]) => [model.trim().toLowerCase(), contextWindow])
+    );
+  } catch {
+    return {};
+  }
+}
+
+function localModelList(options: { opencode?: boolean; sdk?: boolean } = {}): Record<string, unknown> {
+  return modelList({
+    ...options,
+    contextWindows: cachedContextWindows(),
+    allowedModelIds: ALLOWED_MODEL_IDS
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -319,9 +354,9 @@ function previousResponseIdFromBody(body: unknown): string | undefined {
 }
 
 function findModel(id: string): Record<string, unknown> | undefined {
-  const list = modelList() as { data?: Array<Record<string, unknown>> };
+  const models = (localModelList().data as Array<Record<string, unknown>>) ?? [];
   const normalized = id.trim().toLowerCase();
-  return list.data?.find((item) => String(item.id || "").toLowerCase() === normalized);
+  return models.find((item) => String(item.id || "").toLowerCase() === normalized);
 }
 
 // ---------------------------------------------------------------------------
@@ -433,6 +468,7 @@ async function handleChatCompletions(request: Request, auth: ResolvedAuth): Prom
     typeof (body as { model?: unknown })?.model === "string"
       ? (body as { model: string }).model
       : "composer-2.5";
+  assertModelAllowed(requestedModel, ALLOWED_MODEL_IDS);
   const cursorModel = resolveCursorModel(requestedModel);
   const prepared = prepareChatRequest(body, cursorModel);
 
@@ -617,6 +653,7 @@ async function handleCreateResponse(request: Request, auth: ResolvedAuth): Promi
     typeof (body as { model?: unknown })?.model === "string"
       ? (body as { model: string }).model
       : "composer-2.5";
+  assertModelAllowed(requestedModel, ALLOWED_MODEL_IDS);
   const cursorModel = resolveCursorModel(requestedModel);
 
   const previousResponseId = previousResponseIdFromBody(body);
@@ -733,7 +770,7 @@ function discoveryPayload(): Record<string, unknown> {
       gateway: Boolean(LOCAL_API_KEY),
       cursorKeyConfigured: Boolean(CURSOR_API_KEY)
     },
-    models: (modelList() as { data: Array<{ id: string }> }).data.map((m) => m.id),
+    models: (localModelList() as { data: Array<{ id: string }> }).data.map((m) => m.id),
     endpoints: {
       models: "/v1/models",
       chat_completions: "/v1/chat/completions",
@@ -787,7 +824,7 @@ async function handleRequest(request: Request): Promise<Response> {
 
   if ((request.method === "GET" || request.method === "HEAD") && path === "/v1/models") {
     // Models listing is public (ids only); Hermes probes this without secrets sometimes.
-    return json(modelList());
+    return json(localModelList());
   }
 
   const modelMatch = /^\/v1\/models\/([^/]+)$/.exec(path);
