@@ -66,7 +66,7 @@ Do not commit `.env` or Cursor keys.
 
 ### Option 1: Bare metal
 
-Two terminals:
+`bun run` loads the repository `.env` for both processes, including quoted values. Two terminals:
 
 ```bash
 # terminal 1 — Node bridge
@@ -102,7 +102,7 @@ bun run server:logs  # follow api + bridge
 # bun run server:down
 ```
 
-API on host `${PORT:-8788}`; bridge stays on the compose network only (not published). Host project mounts at `/workspace` inside the bridge.
+API on host loopback at `127.0.0.1:${PORT:-8788}`; bridge stays on the compose network only (not published). Host project mounts at `/workspace` inside the bridge. To publish beyond loopback, edit the Compose host address and enable gateway mode with a nonempty `LOCAL_API_KEY`.
 
 ### Smoke
 
@@ -121,8 +121,11 @@ curl http://127.0.0.1:8788/v1/chat/completions \
 ```ts
 import OpenAI from "openai";
 
+const apiKey = process.env.CURSOR_API_KEY;
+if (!apiKey) throw new Error("CURSOR_API_KEY is required");
+
 const client = new OpenAI({
-  apiKey: "YOUR_API_KEY",
+  apiKey,
   baseURL: "http://127.0.0.1:8788/v1"
 });
 
@@ -202,6 +205,10 @@ The template assumes a checkout at `%h/composer-api` and loads its `.env`; adjus
 | `PORT` | `8788` | API port |
 | `CURSOR_SDK_BRIDGE_URL` | `http://127.0.0.1:8792/sdk` | Bridge endpoint |
 | `CURSOR_SDK_BRIDGE_TOKEN` | empty | Shared secret API → bridge |
+| `CURSOR_SDK_BRIDGE_RUN_TIMEOUT_MS` | `180000` | Per-attempt SDK run timeout |
+| `CURSOR_SDK_BRIDGE_REQUEST_TIMEOUT_MS` | `900000` | End-to-end API → bridge HTTP deadline |
+| `CURSOR_SDK_CONTEXT_WINDOW_REFRESH_MS` | `900000` | Checkpoint context-window refresh interval per model |
+| `SHUTDOWN_GRACE_MS` | `10000` | Graceful API drain period before forced close |
 | `CURSOR_SDK_WORKING_DIRECTORY` | `process.cwd()` | Default agent cwd / tool root |
 | `CURSOR_SDK_CONTEXT_WINDOWS_FILE` | `.cursor-sdk-context-windows.json` | Learned context windows from checkpoints |
 | `COMPOSER_API_MODELS` | empty | Comma-separated allowlist |

@@ -55,11 +55,10 @@ npm install   # or: bun install
 
 ### Option 1: Bare metal
 
-Two terminals:
+`bun run` loads the repository `.env` for both scripts, including quoted values. Two terminals:
 
 ```bash
 # terminal 1 — bridge
-export $(grep -v '^#' .env | xargs)   # or use your shell’s dotenv
 bun run server:bridge
 
 # terminal 2 — OpenAI facade
@@ -83,9 +82,11 @@ bun run server:logs
 # bun run server:down
 ```
 
-- API published on host `${PORT:-8788}`
+- API published on host loopback at `127.0.0.1:${PORT:-8788}`
 - Bridge is **not** published (compose network only)
 - Host folder mounts at `/workspace` inside the bridge
+
+To publish the API beyond loopback, edit the host address in `docker-compose.yml` and enable gateway mode with a nonempty `LOCAL_API_KEY`.
 
 ### Smoke
 
@@ -108,6 +109,10 @@ curl -s http://127.0.0.1:8788/v1/chat/completions \
 | `PORT` | `8788` | API port |
 | `CURSOR_SDK_BRIDGE_URL` | `http://127.0.0.1:8792/sdk` | Bridge endpoint |
 | `CURSOR_SDK_BRIDGE_TOKEN` | empty | Shared secret API → bridge |
+| `CURSOR_SDK_BRIDGE_RUN_TIMEOUT_MS` | `180000` | Per-attempt SDK run timeout in the bridge |
+| `CURSOR_SDK_BRIDGE_REQUEST_TIMEOUT_MS` | `900000` | End-to-end API → bridge HTTP deadline, including streamed bodies |
+| `CURSOR_SDK_CONTEXT_WINDOW_REFRESH_MS` | `900000` | Minimum interval between checkpoint context-window refreshes per model |
+| `SHUTDOWN_GRACE_MS` | `10000` | Graceful API drain period before in-flight requests are forced closed |
 | `CURSOR_SDK_WORKING_DIRECTORY` | `process.cwd()` | Default agent cwd / tool root |
 | `CURSOR_SDK_CONTEXT_WINDOWS_FILE` | `.cursor-sdk-context-windows.json` | Shared mode-600 cache learned from completed-run checkpoints |
 | `COMPOSER_API_MODELS` | empty | Optional comma-separated model allowlist; filters discovery and rejects unlisted Chat/Responses requests |
