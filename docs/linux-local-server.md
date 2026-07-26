@@ -198,8 +198,8 @@ After=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/data/personal/composer-api
-EnvironmentFile=-%h/data/personal/composer-api/.env
+WorkingDirectory=%h/composer-api
+EnvironmentFile=-%h/composer-api/.env
 ExecStart=%h/.local/bin/composer-api
 Restart=on-failure
 RestartSec=3

@@ -4,11 +4,8 @@ export interface Env {
   CURSOR_BACKEND_BASE_URL?: string;
   CURSOR_CHAT_ENDPOINT?: string;
   CURSOR_CLIENT_VERSION?: string;
-  CURSOR_LOCAL_AGENT_ENDPOINT?: string;
   CURSOR_SDK_BRIDGE_TOKEN?: string;
-  CURSOR_SDK_BRIDGE_TIMEOUT_MS?: string;
   CURSOR_SDK_BRIDGE_URL?: string;
-  CURSOR_SDK_CLIENT_VERSION?: string;
 }
 
 export interface Deps {
@@ -45,15 +42,4 @@ export interface CursorCompletion {
   requestId: string;
   conversationId: string;
   stream: Response;
-}
-
-export interface CompletionResult {
-  id: string;
-  model: string;
-  created: number;
-  text: string;
-  promptChars: number;
-  completionChars: number;
-  cursorAgentId?: string;
-  cursorRunId?: string;
 }

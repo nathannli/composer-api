@@ -9,7 +9,7 @@ const CORS_HEADERS = {
   "access-control-max-age": "86400"
 };
 
-export function withCors(response: Response): Response {
+function withCors(response: Response): Response {
   const headers = new Headers(response.headers);
   for (const [key, value] of Object.entries(CORS_HEADERS)) {
     headers.set(key, value);

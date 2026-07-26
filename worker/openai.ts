@@ -2,8 +2,6 @@ import { HttpError } from "./http";
 import { encodeSse } from "./sse";
 import type { CursorImage, CursorPrompt, CursorToolCall } from "./types";
 
-export type ApiKind = "chat" | "responses";
-
 export interface PreparedRequest {
   model: string;
   cursorModel?: { id: string };
