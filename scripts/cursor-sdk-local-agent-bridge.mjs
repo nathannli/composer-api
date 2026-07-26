@@ -32,6 +32,7 @@ const maxAgents = parseInteger(process.env.CURSOR_SDK_BRIDGE_MAX_AGENTS, 128);
 const runTimeoutMs = parseInteger(process.env.CURSOR_SDK_BRIDGE_RUN_TIMEOUT_MS, 180 * 1000);
 const maxRunRetries = parseInteger(process.env.CURSOR_SDK_BRIDGE_MAX_RUN_RETRIES, 3);
 const retryBaseDelayMs = parseInteger(process.env.CURSOR_SDK_BRIDGE_RETRY_BASE_DELAY_MS, 500);
+const contextWindowRefreshMs = parseInteger(process.env.CURSOR_SDK_CONTEXT_WINDOW_REFRESH_MS, 15 * 60 * 1000);
 const defaultCwd = process.env.CURSOR_SDK_WORKING_DIRECTORY || process.cwd();
 const clientMcpServerName = "client";
 const clientMcpServerMode = "--client-mcp-server";
@@ -367,17 +368,16 @@ async function runLocalAgentBody(input, onRun, onEvent) {
     if (agentEntry) evictAgent(agentEntry.cacheKey, agentEntry.agent);
     throw sdkRunFailureError(result);
   }
-  const contextWindow = agentEntry
-    ? await learnContextWindowFromCheckpoint(agentEntry.agent.agentId, input.model, input.workingDirectory)
-    : undefined;
+  if (agentEntry) {
+    void refreshContextWindow(agentEntry.agent.agentId, input.model, input.workingDirectory);
+  }
   if (!text && typeof result.result === "string") text = result.result;
   return {
     text: stripFinalMarker(text),
     toolCalls: [],
     agentID: agentEntry?.agent.agentId || "",
     runID: run.id,
-    status: result.status,
-    ...(contextWindow ? { contextWindow } : {})
+    status: result.status
   };
 }
 
@@ -2087,6 +2087,33 @@ async function learnContextWindowFromCheckpoint(agentId, modelId, workingDirecto
     return undefined;
   }
 }
+
+export function createContextWindowRefresher({ learn, ttlMs, now = Date.now }) {
+  const refreshes = new Map();
+  return function refresh(agentId, modelId, workingDirectory) {
+    const key = normalizeModel(typeof modelId === "string" ? modelId : "");
+    const current = refreshes.get(key);
+    if (current?.promise) return current.promise;
+    if (current && now() - current.refreshedAt <= ttlMs) return Promise.resolve();
+
+    const state = current ?? { refreshedAt: Number.NEGATIVE_INFINITY, promise: undefined };
+    const promise = Promise.resolve(learn(agentId, modelId, workingDirectory))
+      .then(() => {
+        state.refreshedAt = now();
+      })
+      .finally(() => {
+        state.promise = undefined;
+      });
+    state.promise = promise;
+    refreshes.set(key, state);
+    return promise;
+  };
+}
+
+const refreshContextWindow = createContextWindowRefresher({
+  learn: learnContextWindowFromCheckpoint,
+  ttlMs: contextWindowRefreshMs
+});
 
 function sdkModelSelection(model) {
   const normalized = normalizeModel(typeof model === "string" ? model : "");

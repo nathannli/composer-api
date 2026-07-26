@@ -10,6 +10,7 @@ import {
   checkpointContextWindow,
   clientForwardingMcpServerSource,
   clientMcpToolDefinitions,
+  createContextWindowRefresher,
   localAgentCreateOptions,
   localAgentSendOptions,
   isForwardableSDKToolCall,
@@ -51,6 +52,37 @@ describe("Cursor SDK local-agent bridge", () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it("deduplicates background context-window refreshes and refreshes again after the TTL", async () => {
+    let now = 1_000;
+    let resolveFirst;
+    const calls = [];
+    const first = new Promise((resolve) => {
+      resolveFirst = resolve;
+    });
+    const refresh = createContextWindowRefresher({
+      ttlMs: 500,
+      now: () => now,
+      learn: async (...args) => {
+        calls.push(args);
+        if (calls.length === 1) await first;
+      }
+    });
+
+    const pending = refresh("agent-1", "composer-2.5", "/workspace");
+    const duplicate = refresh("agent-2", "composer-2.5", "/other-workspace");
+    expect(calls).toHaveLength(1);
+    expect(duplicate).toBe(pending);
+
+    resolveFirst();
+    await pending;
+    await refresh("agent-3", "composer-2.5", "/workspace");
+    expect(calls).toHaveLength(1);
+
+    now += 501;
+    await refresh("agent-4", "composer-2.5", "/workspace");
+    expect(calls).toHaveLength(2);
   });
 
   it("classifies retryable Cursor SDK upstream capacity errors", () => {

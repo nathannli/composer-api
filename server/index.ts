@@ -1,7 +1,12 @@
 import { resolveCursorModel } from "../worker/cursor";
-import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  ContextWindowCache,
+  createDeadline,
+  hashOwnerKey,
+  stopServerGracefully
+} from "./runtime";
 import {
   bearerToken,
   errorResponse,
@@ -45,6 +50,8 @@ const PORT = parseInt(process.env.PORT || "8788", 10);
 const HOST = process.env.HOST || process.env.CURSOR_API_HOST || "127.0.0.1";
 const BRIDGE_URL = process.env.CURSOR_SDK_BRIDGE_URL || "http://127.0.0.1:8792/sdk";
 const BRIDGE_TOKEN = process.env.CURSOR_SDK_BRIDGE_TOKEN || "";
+const BRIDGE_REQUEST_TIMEOUT_MS = positiveInteger(process.env.CURSOR_SDK_BRIDGE_REQUEST_TIMEOUT_MS, 15 * 60 * 1000);
+const SHUTDOWN_GRACE_MS = positiveInteger(process.env.SHUTDOWN_GRACE_MS, 10 * 1000);
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CONTEXT_WINDOW_CACHE_FILE = path.resolve(
   process.env.CURSOR_SDK_CONTEXT_WINDOWS_FILE || path.join(REPO_ROOT, ".cursor-sdk-context-windows.json")
@@ -65,6 +72,12 @@ const CURSOR_API_KEY = (process.env.CURSOR_API_KEY || "").trim();
 const LOCAL_API_KEY = (process.env.LOCAL_API_KEY || process.env.API_GATEWAY_KEY || "").trim();
 
 const RESPONSE_STATE_LIMIT = 512;
+const contextWindowCache = new ContextWindowCache(CONTEXT_WINDOW_CACHE_FILE);
+
+function positiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 function resolveDefaultWorkingDirectory(): string {
   const configured =
@@ -76,20 +89,7 @@ function resolveDefaultWorkingDirectory(): string {
 }
 
 function cachedContextWindows(): Record<string, number> {
-  try {
-    const parsed = JSON.parse(readFileSync(CONTEXT_WINDOW_CACHE_FILE, "utf8")) as {
-      contextWindows?: Record<string, unknown>;
-    };
-    return Object.fromEntries(
-      Object.entries(parsed.contextWindows ?? {})
-        .filter((entry): entry is [string, number] => (
-          typeof entry[1] === "number" && Number.isInteger(entry[1]) && entry[1] > 0
-        ))
-        .map(([model, contextWindow]) => [model.trim().toLowerCase(), contextWindow])
-    );
-  } catch {
-    return {};
-  }
+  return contextWindowCache.read();
 }
 
 function localModelList(options: { opencode?: boolean; sdk?: boolean } = {}): Record<string, unknown> {
@@ -148,13 +148,7 @@ function resolveAuth(request: Request): ResolvedAuth | null {
 }
 
 function hashKey(value: string): string {
-  // Short non-crypto fingerprint for in-memory partitioning (not a secret store).
-  let h = 2166136261;
-  for (let i = 0; i < value.length; i += 1) {
-    h ^= value.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return (h >>> 0).toString(16).padStart(8, "0");
+  return hashOwnerKey(value);
 }
 
 // ---------------------------------------------------------------------------
@@ -253,68 +247,82 @@ function bridgeHeaders(): HeadersInit {
 }
 
 async function callSdkBridge(input: BridgeInput): Promise<BridgeOutput> {
-  let response: Response;
+  const deadline = createDeadline(BRIDGE_REQUEST_TIMEOUT_MS);
   try {
-    response = await fetch(BRIDGE_URL, {
+    const response = await fetch(BRIDGE_URL, {
       method: "POST",
       headers: bridgeHeaders(),
-      body: JSON.stringify(input)
+      body: JSON.stringify(input),
+      signal: deadline.signal
     });
+
+    if (!response.ok) {
+      const error = (await response.json().catch(() => ({}))) as {
+        error?: { message?: string };
+      };
+      throw new HttpError(
+        error.error?.message || `SDK bridge error: ${response.status}`,
+        response.status >= 400 && response.status < 600 ? response.status : 502,
+        "cursor_sdk_error"
+      );
+    }
+
+    return await response.json() as BridgeOutput;
   } catch (error) {
+    if (error instanceof HttpError) throw error;
+    if (deadline.signal.aborted) {
+      throw new HttpError("SDK bridge request timed out", 504, "cursor_sdk_timeout");
+    }
     const message = error instanceof Error ? error.message : "SDK bridge unreachable";
     throw new HttpError(`SDK bridge unreachable: ${message}`, 502, "cursor_sdk_error");
+  } finally {
+    deadline.clear();
   }
-
-  if (!response.ok) {
-    const error = (await response.json().catch(() => ({}))) as {
-      error?: { message?: string };
-    };
-    throw new HttpError(
-      error.error?.message || `SDK bridge error: ${response.status}`,
-      response.status >= 400 && response.status < 600 ? response.status : 502,
-      "cursor_sdk_error"
-    );
-  }
-
-  return response.json() as Promise<BridgeOutput>;
 }
 
 async function* streamSdkBridge(input: BridgeInput): AsyncGenerator<BridgeStreamEvent> {
-  let response: Response;
+  const deadline = createDeadline(BRIDGE_REQUEST_TIMEOUT_MS);
   try {
-    response = await fetch(BRIDGE_URL, {
+    const response = await fetch(BRIDGE_URL, {
       method: "POST",
       headers: bridgeHeaders(),
-      body: JSON.stringify(input)
+      body: JSON.stringify(input),
+      signal: deadline.signal
     });
+
+    if (!response.ok || !response.body) {
+      throw new HttpError(`SDK bridge error: ${response.status}`, response.status || 502, "cursor_sdk_error");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        yield JSON.parse(trimmed) as BridgeStreamEvent;
+      }
+    }
+
+    const tail = buffer.trim();
+    if (tail) yield JSON.parse(tail) as BridgeStreamEvent;
   } catch (error) {
+    if (error instanceof HttpError) throw error;
+    if (deadline.signal.aborted) {
+      throw new HttpError("SDK bridge request timed out", 504, "cursor_sdk_timeout");
+    }
     const message = error instanceof Error ? error.message : "SDK bridge unreachable";
     throw new HttpError(`SDK bridge unreachable: ${message}`, 502, "cursor_sdk_error");
+  } finally {
+    deadline.clear();
   }
-
-  if (!response.ok || !response.body) {
-    throw new HttpError(`SDK bridge error: ${response.status}`, response.status || 502, "cursor_sdk_error");
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() || "";
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      yield JSON.parse(trimmed) as BridgeStreamEvent;
-    }
-  }
-
-  const tail = buffer.trim();
-  if (tail) yield JSON.parse(tail) as BridgeStreamEvent;
 }
 
 // ---------------------------------------------------------------------------
@@ -910,14 +918,20 @@ console.log(`  cwd:        ${DEFAULT_WORKING_DIRECTORY}`);
 console.log(`  gateway:    ${LOCAL_API_KEY ? "LOCAL_API_KEY enabled" : "direct Cursor bearer"}`);
 console.log(`  cursor key: ${CURSOR_API_KEY ? "configured via env" : "from request bearer"}`);
 
-process.on("SIGINT", () => {
-  console.log("Shutting down gracefully...");
-  server.stop(true);
-  process.exit(0);
-});
+let shuttingDown = false;
 
-process.on("SIGTERM", () => {
+function beginShutdown(): void {
+  if (shuttingDown) {
+    void server.stop(true);
+    return;
+  }
+  shuttingDown = true;
   console.log("Shutting down gracefully...");
-  server.stop(true);
-  process.exit(0);
-});
+  void stopServerGracefully(server, SHUTDOWN_GRACE_MS).catch((error) => {
+    console.error("Server shutdown failed:", error);
+    process.exitCode = 1;
+  });
+}
+
+process.on("SIGINT", beginShutdown);
+process.on("SIGTERM", beginShutdown);
