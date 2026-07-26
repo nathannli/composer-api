@@ -328,6 +328,16 @@ async function runLocalAgentBody(input, onRun, onEvent) {
           if (thinkingText && onEvent) onEvent({ type: "thinking", text: thinkingText });
           continue;
         }
+        // Known SDK lifecycle / non-content events (SDKMessage in @cursor/sdk messages.d.ts).
+        if (
+          event.type === "status" ||
+          event.type === "system" ||
+          event.type === "user" ||
+          event.type === "request" ||
+          event.type === "task"
+        ) {
+          continue;
+        }
         if (event.type !== "assistant" && event.type !== "tool_call") {
           console.warn("[SDK bridge] Unknown stream event type:", event.type, "keys:", Object.keys(event || {}).join(","));
         }

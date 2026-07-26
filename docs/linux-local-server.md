@@ -25,24 +25,39 @@ Default bind is **loopback** (`HOST=127.0.0.1`). Only expose beyond localhost be
 
 Default API port is **8788** so it does not collide with **hermes-webui** on `:8787`. Override with `PORT` if needed. Bridge remains on **8792**.
 
-## Quick start (bare metal)
+## Quick start
+
+Two ways to run this stack:
+
+1. **Bare metal** — Node bridge + Bun API on the host (two terminals, or one systemd user unit)
+2. **Docker Compose** — same two processes in containers (`bun run server:up`)
 
 Requirements: Node ≥ 18 (for the SDK bridge — **do not run the bridge under Bun**),
-[Bun](https://bun.sh) ≥ 1.3 (OpenAI facade only), a Cursor user API key.
+[Bun](https://bun.sh) ≥ 1.3 (OpenAI facade; also used for Compose helper scripts), a Cursor user API key.
+For Compose you also need Docker with the Compose plugin.
 
 Bun’s HTTP/2 client hits `NGHTTP2_FRAME_SIZE_ERROR` with `@cursor/sdk`; always use
 `node` / `bun run server:bridge` (which invokes Node) for the bridge.
+
+Shared setup:
 
 ```bash
 cp .env.example .env
 # edit .env — at minimum:
 #   CURSOR_API_KEY=...          # Cursor dashboard key
-#   LOCAL_API_KEY=...           # random secret Hermes will send
+#   LOCAL_API_KEY=...           # optional gateway key clients send as Bearer
 #   CURSOR_SDK_WORKING_DIRECTORY=/home/you/projects/my-app
 #   CURSOR_SDK_BRIDGE_TOKEN=... # random shared secret bridge↔api
+# Recommended for Hermes: COMPOSER_API_MODELS=composer-2.5,grok-4.5
 
 npm install   # or: bun install
+```
 
+### Option 1: Bare metal
+
+Two terminals:
+
+```bash
 # terminal 1 — bridge
 export $(grep -v '^#' .env | xargs)   # or use your shell’s dotenv
 bun run server:bridge
@@ -51,34 +66,39 @@ bun run server:bridge
 bun run server
 ```
 
-Smoke:
+Or install the systemd user unit (starts both processes, stops both on exit) — see [systemd](#systemd-optional-bare-metal).
+
+### Option 2: Docker Compose
 
 ```bash
-curl -s http://127.0.0.1:8788/health | jq .
-curl -s http://127.0.0.1:8788/v1/models | jq '.data[].id'
-curl -s http://127.0.0.1:8788/v1/chat/completions \
-  -H "authorization: Bearer $LOCAL_API_KEY" \
-  -H "content-type: application/json" \
-  -d '{"model":"composer-2.5","messages":[{"role":"user","content":"ping"}],"stream":false}'
-```
-
-## Docker Compose
-
-```bash
-export CURSOR_API_KEY=...
+export CURSOR_API_KEY=YOUR_API_KEY
 export LOCAL_API_KEY=$(openssl rand -hex 24)
 export CURSOR_SDK_BRIDGE_TOKEN=$(openssl rand -hex 24)
 export CURSOR_SDK_WORKSPACE_HOST=$HOME/projects/my-app
 export CURSOR_SDK_WORKING_DIRECTORY=/workspace
+# optional: COMPOSER_API_MODELS=composer-2.5,grok-4.5
 
 bun run server:up          # docker compose up --build -d
 bun run server:logs
-bun run server:down
+# bun run server:down
 ```
 
 - API published on host `${PORT:-8788}`
 - Bridge is **not** published (compose network only)
 - Host folder mounts at `/workspace` inside the bridge
+
+### Smoke
+
+Same for either method:
+
+```bash
+curl -s http://127.0.0.1:8788/health | jq .
+curl -s http://127.0.0.1:8788/v1/models | jq '.data[].id'
+curl -s http://127.0.0.1:8788/v1/chat/completions \
+  -H "authorization: Bearer YOUR_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{"model":"composer-2.5","messages":[{"role":"user","content":"ping"}],"stream":false}'
+```
 
 ## Environment
 
@@ -96,62 +116,50 @@ bun run server:down
 
 ### Auth modes
 
-1. **Gateway (recommended for Hermes)**  
-   Set both `CURSOR_API_KEY` and `LOCAL_API_KEY`.  
-   Clients send `Authorization: Bearer <LOCAL_API_KEY>`.  
-   The server forwards `CURSOR_API_KEY` to Cursor.
+Server-wide for any OpenAI-compatible client (curl, SDKs, Hermes, etc.):
 
-2. **Direct**  
-   Leave `LOCAL_API_KEY` empty.  
-   Clients send the Cursor API key as Bearer (same as the macOS app / worker direct mode).
+1. **Direct** — leave `LOCAL_API_KEY` empty; clients send the Cursor API key as Bearer.
+2. **Gateway** — set both `CURSOR_API_KEY` and `LOCAL_API_KEY`; clients send `LOCAL_API_KEY`, the server forwards `CURSOR_API_KEY` to Cursor.
 
 ## Hermes custom endpoint
 
-Hermes uses OpenAI-compatible **chat completions**. Point it at this server:
-
-```bash
-# secrets
-hermes config set --env CURSOR_LOCAL_API_KEY "$LOCAL_API_KEY"
-
-# model pointing at the local server (custom OpenAI-compatible)
-hermes config set model.provider custom
-hermes config set model.base_url http://127.0.0.1:8788/v1
-hermes config set model.default composer-2.5
-# api key: prefer env reference if your Hermes build supports key_env;
-# otherwise set the gateway key the server expects:
-hermes config set model.api_key "$LOCAL_API_KEY"
-```
-
-Optional alias:
+Hermes uses OpenAI-compatible **chat completions**. Add a `custom_providers` entry (prefer `hermes config set` over hand-editing YAML):
 
 ```yaml
-# conceptual shape — use hermes config set, don’t hand-edit if avoidable
-model_aliases:
-  cursor-composer:
-    model: composer-2.5
-    provider: custom
+# ~/.hermes/config.yaml
+custom_providers:
+  - name: composer-api
     base_url: http://127.0.0.1:8788/v1
+    key_env: CURSOR_API_KEY   # or LOCAL_API_KEY when gateway mode is on
+    api_mode: chat_completions
+    models:
+      - id: composer-2.5
+      - id: grok-4.5
 ```
 
-Then `/model cursor-composer` or set it as the session default.
+Put the matching secret in `~/.hermes/.env` (e.g. `CURSOR_API_KEY=...`). Select with:
 
-Useful model ids from `GET /v1/models`:
+```text
+/model @custom:composer-api:composer-2.5
+```
 
-- `composer-2.5`
-- `composer-2.5-fast`
-- `grok-4.5`
-- `grok-4.5-fast`
-- plus other Cursor-routed ids advertised by the list
+### Model allowlist (recommended)
 
-To control the emitted catalog, set a comma-separated allowlist and restart the API server:
+Hermes defaults to live discovery for custom OpenAI-compatible providers. If
+`COMPOSER_API_MODELS` is unset, `/v1/models` returns the full bundled catalog
+and Hermes will replace your short configured `models:` list after the first
+chat. Restrict the API (and restart):
 
 ```bash
-COMPOSER_API_MODELS=composer-2.5,composer-2.5-fast,grok-4.5
+# in the repo .env loaded by systemd / docker
+COMPOSER_API_MODELS=composer-2.5,grok-4.5
+systemctl --user restart composer-api
 ```
 
 When unset or blank, the full bundled catalog is advertised. When set, the same
 allowlist also applies to `POST /v1/chat/completions` and `POST /v1/responses`;
 unlisted model IDs return `404 model_not_found` before the SDK bridge is called.
+Keep the allowlist in sync with the Hermes `models:` list.
 
 ### What Hermes needs (minimum)
 
@@ -165,47 +173,50 @@ Streaming chat is implemented. Keep the server and bridge running for the whole 
 
 ## systemd (optional bare metal)
 
-Example user units (adjust paths):
+A single user unit starts **both** the Node bridge and Bun API via a launcher:
 
-`~/.config/systemd/user/cursor-sdk-bridge.service`
+- Repo unit: `systemd-service-files/composer-api.service`
+- Launcher: `~/.local/bin/composer-api` (Node bridge + Bun API; kills both on exit)
 
-```ini
-[Unit]
-Description=Cursor SDK bridge
-After=network.target
+Install (adjust paths if your repo is elsewhere):
 
-[Service]
-WorkingDirectory=%h/data/personal/composer-api
-EnvironmentFile=%h/data/personal/composer-api/.env
-ExecStart=/usr/bin/bun run scripts/cursor-sdk-local-agent-bridge.mjs
-Restart=on-failure
-
-[Install]
-WantedBy=default.target
+```bash
+mkdir -p ~/.config/systemd/user ~/.local/bin
+cp systemd-service-files/composer-api.service ~/.config/systemd/user/
+# ensure ~/.local/bin/composer-api exists and points at this repo
+systemctl --user daemon-reload
+systemctl --user enable --now composer-api
 ```
 
-`~/.config/systemd/user/cursor-api.service`
+Repo unit shape:
 
 ```ini
 [Unit]
-Description=API for Cursor local OpenAI server
-After=cursor-sdk-bridge.service
-Requires=cursor-sdk-bridge.service
+Description=Composer API and Cursor SDK bridge
+Wants=network-online.target
+After=network-online.target
 
 [Service]
+Type=simple
 WorkingDirectory=%h/data/personal/composer-api
-EnvironmentFile=%h/data/personal/composer-api/.env
-ExecStart=/usr/bin/bun run server/index.ts
+EnvironmentFile=-%h/data/personal/composer-api/.env
+ExecStart=%h/.local/bin/composer-api
 Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+KillMode=control-group
 
 [Install]
 WantedBy=default.target
 ```
 
 ```bash
-systemctl --user daemon-reload
-systemctl --user enable --now cursor-sdk-bridge cursor-api
+systemctl --user restart composer-api
+systemctl --user status composer-api
+journalctl --user -u composer-api -f
 ```
+
+Put `COMPOSER_API_MODELS` (and other secrets) in the repo `.env` loaded by `EnvironmentFile`. Do not hardcode usernames; the unit uses `%h`.
 
 ## Security notes
 
