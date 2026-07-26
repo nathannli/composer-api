@@ -175,7 +175,15 @@ Server-wide for any OpenAI-compatible client (curl, SDKs, Hermes, etc.):
 ## systemd
 
 Repo unit: `systemd-service-files/composer-api.service`  
-Launcher: `~/.local/bin/composer-api` (starts Node bridge + Bun API; stops both on exit)
+Repo launcher: `systemd-service-files/composer-api` (starts Node bridge + Bun API; stops both on exit)
+
+```bash
+mkdir -p ~/.config/systemd/user ~/.local/bin
+cp systemd-service-files/composer-api.service ~/.config/systemd/user/
+install -m 0755 systemd-service-files/composer-api ~/.local/bin/composer-api
+systemctl --user daemon-reload
+systemctl --user enable --now composer-api
+```
 
 ```bash
 systemctl --user restart composer-api
@@ -183,7 +191,7 @@ systemctl --user status composer-api
 journalctl --user -u composer-api -f
 ```
 
-The unit uses `%h` paths and loads `EnvironmentFile=-%h/data/personal/composer-api/.env`.
+The template assumes a checkout at `%h/composer-api` and loads its `.env`; adjust the unit paths if the repo lives elsewhere.
 
 
 ## Environment

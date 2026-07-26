@@ -176,14 +176,14 @@ Streaming chat is implemented. Keep the server and bridge running for the whole 
 A single user unit starts **both** the Node bridge and Bun API via a launcher:
 
 - Repo unit: `systemd-service-files/composer-api.service`
-- Launcher: `~/.local/bin/composer-api` (Node bridge + Bun API; kills both on exit)
+- Repo launcher: `systemd-service-files/composer-api` (Node bridge + Bun API; kills both on exit)
 
 Install (adjust paths if your repo is elsewhere):
 
 ```bash
 mkdir -p ~/.config/systemd/user ~/.local/bin
 cp systemd-service-files/composer-api.service ~/.config/systemd/user/
-# ensure ~/.local/bin/composer-api exists and points at this repo
+install -m 0755 systemd-service-files/composer-api ~/.local/bin/composer-api
 systemctl --user daemon-reload
 systemctl --user enable --now composer-api
 ```
@@ -216,7 +216,7 @@ systemctl --user status composer-api
 journalctl --user -u composer-api -f
 ```
 
-Put `COMPOSER_API_MODELS` (and other secrets) in the repo `.env` loaded by `EnvironmentFile`. Do not hardcode usernames; the unit uses `%h`.
+Put `COMPOSER_API_MODELS` (and other secrets) in the repo `.env` loaded by `EnvironmentFile`. The launcher uses the unit's `WorkingDirectory` by default; override it with `COMPOSER_API_REPO_DIR` if needed. Do not hardcode usernames; the unit uses `%h`.
 
 ## Security notes
 
