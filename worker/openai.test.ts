@@ -1680,7 +1680,7 @@ describe("OpenAI compatibility adapter", () => {
       context_window: 200_000,
       max_model_len: 200_000,
       pricing: {
-        prompt: "5e-7",
+        prompt: "0.0000005",
         completion: "0.0000025"
       }
     });

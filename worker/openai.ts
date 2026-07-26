@@ -844,12 +844,19 @@ function modelItem(id: string, name: string, options: {
       : pricing
         ? {
             pricing: {
-              prompt: String(pricing.input / 1_000_000),
-              completion: String(pricing.output / 1_000_000)
+              prompt: perTokenPrice(pricing.input),
+              completion: perTokenPrice(pricing.output)
             }
           }
         : {})
   };
+}
+
+function perTokenPrice(pricePerMillionTokens: number): string {
+  return (pricePerMillionTokens / 1_000_000)
+    .toFixed(12)
+    .replace(/0+$/, "")
+    .replace(/\.$/, "");
 }
 
 export function completionCharsFromOutput(text: string, toolCalls: OpenAiToolCall[] = []): number {
