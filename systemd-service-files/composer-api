@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly REPO_DIR="${COMPOSER_API_REPO_DIR:-$PWD}"
+readonly NODE_BIN="${NODE_BIN:-$(command -v node)}"
+readonly BUN_BIN="${BUN_BIN:-$(command -v bun)}"
+
+bridge_pid=""
+api_pid=""
+
+stop_children() {
+  trap - EXIT INT TERM
+  [[ -n "$api_pid" ]] && kill "$api_pid" 2>/dev/null || true
+  [[ -n "$bridge_pid" ]] && kill "$bridge_pid" 2>/dev/null || true
+  [[ -n "$api_pid" ]] && wait "$api_pid" 2>/dev/null || true
+  [[ -n "$bridge_pid" ]] && wait "$bridge_pid" 2>/dev/null || true
+}
+
+handle_signal() {
+  stop_children
+  exit 0
+}
+
+trap stop_children EXIT
+trap handle_signal INT TERM
+cd "$REPO_DIR"
+
+"$NODE_BIN" scripts/cursor-sdk-local-agent-bridge.mjs &
+bridge_pid=$!
+
+"$BUN_BIN" run server/index.ts &
+api_pid=$!
+
+set +e
+wait -n "$bridge_pid" "$api_pid"
+status=$?
+set -e
+
+stop_children
+exit "$status"

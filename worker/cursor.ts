@@ -241,7 +241,7 @@ async function* streamLegacyAgentText(response: Response): AsyncGenerator<Cursor
   yield { type: "done", finalText: text, toolCalls };
 }
 
-export interface CursorCollectedOutput {
+interface CursorCollectedOutput {
   text: string;
   toolCalls: CursorToolCall[];
 }

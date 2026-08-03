@@ -1,7 +1,14 @@
 #!/usr/bin/env node
-import { Agent } from "@cursor/sdk";
+import { Agent, createAgentPlatform } from "@cursor/sdk";
 import crypto from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync
+} from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import readline from "node:readline";
@@ -13,6 +20,10 @@ const repoRoot = path.resolve(scriptDir, "..");
 loadEnvFile(path.join(repoRoot, ".env"));
 loadEnvFile(path.join(process.cwd(), ".env"));
 
+const contextWindowCachePath = path.resolve(
+  process.env.CURSOR_SDK_CONTEXT_WINDOWS_FILE || path.join(repoRoot, ".cursor-sdk-context-windows.json")
+);
+
 const host = process.env.CURSOR_SDK_BRIDGE_HOST || "127.0.0.1";
 const port = parseInteger(process.env.CURSOR_SDK_BRIDGE_PORT, 8792);
 const bridgeToken = process.env.CURSOR_SDK_BRIDGE_TOKEN || "";
@@ -21,6 +32,7 @@ const maxAgents = parseInteger(process.env.CURSOR_SDK_BRIDGE_MAX_AGENTS, 128);
 const runTimeoutMs = parseInteger(process.env.CURSOR_SDK_BRIDGE_RUN_TIMEOUT_MS, 180 * 1000);
 const maxRunRetries = parseInteger(process.env.CURSOR_SDK_BRIDGE_MAX_RUN_RETRIES, 3);
 const retryBaseDelayMs = parseInteger(process.env.CURSOR_SDK_BRIDGE_RETRY_BASE_DELAY_MS, 500);
+const contextWindowRefreshMs = parseInteger(process.env.CURSOR_SDK_CONTEXT_WINDOW_REFRESH_MS, 15 * 60 * 1000);
 const defaultCwd = process.env.CURSOR_SDK_WORKING_DIRECTORY || process.cwd();
 const clientMcpServerName = "client";
 const clientMcpServerMode = "--client-mcp-server";
@@ -312,6 +324,24 @@ async function runLocalAgentBody(input, onRun, onEvent) {
           await captureToolCall({ type: event.name, args: event.args }, { waitForCancel: false });
           if (capturedToolCall) break;
         }
+        if (event.type === "thinking") {
+          const thinkingText = extractEventText(event);
+          if (thinkingText && onEvent) onEvent({ type: "thinking", text: thinkingText });
+          continue;
+        }
+        // Known SDK lifecycle / non-content events (SDKMessage in @cursor/sdk messages.d.ts).
+        if (
+          event.type === "status" ||
+          event.type === "system" ||
+          event.type === "user" ||
+          event.type === "request" ||
+          event.type === "task"
+        ) {
+          continue;
+        }
+        if (event.type !== "assistant" && event.type !== "tool_call") {
+          console.warn("[SDK bridge] Unknown stream event type:", event.type, "keys:", Object.keys(event || {}).join(","));
+        }
       }
     }
   } catch (error) {
@@ -337,6 +367,9 @@ async function runLocalAgentBody(input, onRun, onEvent) {
   if (result.status === "error") {
     if (agentEntry) evictAgent(agentEntry.cacheKey, agentEntry.agent);
     throw sdkRunFailureError(result);
+  }
+  if (agentEntry) {
+    void refreshContextWindow(agentEntry.agent.agentId, input.model, input.workingDirectory);
   }
   if (!text && typeof result.result === "string") text = result.result;
   return {
@@ -2010,6 +2043,78 @@ function normalizeModel(model) {
   return raw;
 }
 
+export function checkpointContextWindow(checkpoint) {
+  const maxTokens = checkpoint?.tokenDetails?.maxTokens;
+  return Number.isInteger(maxTokens) && maxTokens > 0 ? maxTokens : undefined;
+}
+
+export function saveCachedContextWindow(filePath, modelId, contextWindow) {
+  const normalizedModel = normalizeModel(typeof modelId === "string" ? modelId : "");
+  if (!normalizedModel || !Number.isInteger(contextWindow) || contextWindow <= 0) return;
+
+  let current = {};
+  try {
+    const parsed = JSON.parse(readFileSync(filePath, "utf8"));
+    if (parsed && typeof parsed.contextWindows === "object" && !Array.isArray(parsed.contextWindows)) {
+      current = parsed.contextWindows;
+    }
+  } catch {}
+
+  const contextWindows = Object.fromEntries(
+    Object.entries({ ...current, [normalizedModel]: contextWindow })
+      .filter(([, value]) => Number.isInteger(value) && value > 0)
+      .sort(([left], [right]) => left.localeCompare(right))
+  );
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(temporaryPath, `${JSON.stringify({ contextWindows }, null, 2)}\n`, { mode: 0o600 });
+  renameSync(temporaryPath, filePath);
+  chmodSync(filePath, 0o600);
+}
+
+async function learnContextWindowFromCheckpoint(agentId, modelId, workingDirectory) {
+  try {
+    const platform = await createAgentPlatform({
+      workspaceRef: workingDirectory,
+      scopedWorkspaceRef: workingDirectory
+    });
+    const checkpoint = await platform.checkpointStore.loadLatest(agentId);
+    const contextWindow = checkpointContextWindow(checkpoint);
+    if (contextWindow) saveCachedContextWindow(contextWindowCachePath, modelId, contextWindow);
+    return contextWindow;
+  } catch (error) {
+    console.warn(`Could not learn Cursor context window from checkpoint: ${errorMessage(error)}`);
+    return undefined;
+  }
+}
+
+export function createContextWindowRefresher({ learn, ttlMs, now = Date.now }) {
+  const refreshes = new Map();
+  return function refresh(agentId, modelId, workingDirectory) {
+    const key = normalizeModel(typeof modelId === "string" ? modelId : "");
+    const current = refreshes.get(key);
+    if (current?.promise) return current.promise;
+    if (current && now() - current.refreshedAt <= ttlMs) return Promise.resolve();
+
+    const state = current ?? { refreshedAt: Number.NEGATIVE_INFINITY, promise: undefined };
+    const promise = Promise.resolve(learn(agentId, modelId, workingDirectory))
+      .then(() => {
+        state.refreshedAt = now();
+      })
+      .finally(() => {
+        state.promise = undefined;
+      });
+    state.promise = promise;
+    refreshes.set(key, state);
+    return promise;
+  };
+}
+
+const refreshContextWindow = createContextWindowRefresher({
+  learn: learnContextWindowFromCheckpoint,
+  ttlMs: contextWindowRefreshMs
+});
+
 function sdkModelSelection(model) {
   const normalized = normalizeModel(typeof model === "string" ? model : "");
   if (normalized === "composer-2.5") return { id: "composer-2.5", params: [{ id: "fast", value: "false" }] };
@@ -2023,6 +2128,12 @@ function sdkWorkingDirectory(value) {
   const trimmed = typeof value === "string" ? value.trim() : "";
   if (!trimmed || trimmed.toLowerCase() === "undefined" || trimmed.toLowerCase() === "null") return defaultCwd;
   return trimmed;
+}
+
+function extractEventText(event) {
+  if (typeof event?.text === "string") return event.text;
+  const blocks = Array.isArray(event?.message?.content) ? event.message.content : [];
+  return blocks.filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => b.text).join("");
 }
 
 function stripFinalMarker(text) {

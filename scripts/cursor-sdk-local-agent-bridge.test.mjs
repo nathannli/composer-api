@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { spawn, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   bridgePrompt,
+  checkpointContextWindow,
   clientForwardingMcpServerSource,
   clientMcpToolDefinitions,
+  createContextWindowRefresher,
   localAgentCreateOptions,
   localAgentSendOptions,
   isForwardableSDKToolCall,
@@ -14,6 +19,7 @@ import {
   normalizeSDKToolCall,
   openAiError,
   runExclusiveForAgent,
+  saveCachedContextWindow,
   sdkRunFailureSummary,
   statusFromError,
   toolCallFromDelta,
@@ -23,6 +29,62 @@ import {
 const bridgeScriptPath = fileURLToPath(new URL("./cursor-sdk-local-agent-bridge.mjs", import.meta.url));
 
 describe("Cursor SDK local-agent bridge", () => {
+  it("extracts positive checkpoint maxTokens values", () => {
+    expect(checkpointContextWindow({ tokenDetails: { maxTokens: 262_000 } })).toBe(262_000);
+    expect(checkpointContextWindow({ tokenDetails: { maxTokens: 0 } })).toBeUndefined();
+    expect(checkpointContextWindow({ tokenDetails: { maxTokens: "262000" } })).toBeUndefined();
+  });
+
+  it("persists learned context windows without replacing other model observations", () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "composer-context-windows-"));
+    const cachePath = path.join(directory, "context-windows.json");
+    try {
+      saveCachedContextWindow(cachePath, "grok-4.5", 384_000);
+      saveCachedContextWindow(cachePath, "composer-2.5", 246_000);
+
+      expect(JSON.parse(readFileSync(cachePath, "utf8"))).toEqual({
+        contextWindows: {
+          "composer-2.5": 246_000,
+          "grok-4.5": 384_000
+        }
+      });
+      expect(statSync(cachePath).mode & 0o777).toBe(0o600);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("deduplicates background context-window refreshes and refreshes again after the TTL", async () => {
+    let now = 1_000;
+    let resolveFirst;
+    const calls = [];
+    const first = new Promise((resolve) => {
+      resolveFirst = resolve;
+    });
+    const refresh = createContextWindowRefresher({
+      ttlMs: 500,
+      now: () => now,
+      learn: async (...args) => {
+        calls.push(args);
+        if (calls.length === 1) await first;
+      }
+    });
+
+    const pending = refresh("agent-1", "composer-2.5", "/workspace");
+    const duplicate = refresh("agent-2", "composer-2.5", "/other-workspace");
+    expect(calls).toHaveLength(1);
+    expect(duplicate).toBe(pending);
+
+    resolveFirst();
+    await pending;
+    await refresh("agent-3", "composer-2.5", "/workspace");
+    expect(calls).toHaveLength(1);
+
+    now += 501;
+    await refresh("agent-4", "composer-2.5", "/workspace");
+    expect(calls).toHaveLength(2);
+  });
+
   it("classifies retryable Cursor SDK upstream capacity errors", () => {
     expect(isRetryableSDKRunError(new Error("Server at capacity"))).toBe(true);
     expect(isRetryableSDKRunError({ cause: { isRetryable: true } })).toBe(true);

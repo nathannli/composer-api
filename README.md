@@ -1,46 +1,132 @@
-# API for Cursor
+# API for Cursor (Linux)
 
-Local OpenAI-compatible `chat.completions` and `responses` endpoints backed by Cursor models (Composer 2.5, Grok 4.5, and more).
+Linux fork of [API for Cursor](https://github.com/standardagents/composer-api): a headless OpenAI-compatible `/v1` server backed by Cursor models via `@cursor/sdk`. Bun API + Node SDK bridge only.
 
-Download site: https://api-for-cursor.standardagents.ai
+## Architecture
 
-## What this is
+```text
+Client (Hermes, curl, OpenAI SDKs)
+   │  Bearer: CURSOR_API_KEY (direct) or LOCAL_API_KEY (gateway)
+   ▼
+Bun API  :8788
+   GET  /health  /v1/models
+   POST /v1/chat/completions
+   POST /v1/responses
+   │
+   ▼
+Node SDK bridge  :8792/sdk
+   │
+   ▼
+@cursor/sdk + your Cursor account
+```
 
-Cursor does not expose Composer or other first-party models as a raw OpenAI-compatible model endpoint. API for Cursor now ships as a local macOS app that starts a localhost `/v1` server, stores the Cursor API key locally, and configures local agent tools.
+Default bind is loopback (`HOST=127.0.0.1`). API port defaults to **8788** so it does not collide with hermes-webui on `:8787`. The bridge must run under **Node** (Bun's HTTP/2 client hits `NGHTTP2_FRAME_SIZE_ERROR` with `@cursor/sdk`).
 
-The hosted Worker routes remain in the repository for temporary compatibility while the local app rollout is verified. Cursor has asked us to take down the hosted API path, so the production release path is the signed macOS app.
+Full detail: [docs/linux-local-server.md](docs/linux-local-server.md).
 
 ## Supported endpoints
 
 - `POST /v1/chat/completions`
 - `POST /v1/responses`
 - `GET /v1/models`
+- `GET /health`
 
 ## Models
 
-Primary local model ids:
+Bundled catalog includes Composer, GPT/Codex, Gemini, Grok, Kimi, and aliases. Restrict what is advertised and accepted with `COMPOSER_API_MODELS`.
+
+Primary ids:
 
 - `composer-2.5`
 - `composer-2.5-fast`
 - `grok-4.5`
 - `grok-4.5-fast`
 
-## Usage
+## Quick start
 
-Install the macOS app from the DMG and start the local API. The default base URL is:
+Two ways to run this stack:
 
-```txt
-http://127.0.0.1:8787/v1
+1. **Bare metal** — Node bridge + Bun API on the host (two terminals, or one systemd user unit)
+2. **Docker Compose** — same two processes in containers (`bun run server:up`)
+
+Requirements: Node ≥ 18 (bridge), [Bun](https://bun.sh) ≥ 1.3 (API; also used for Compose helper scripts), Cursor user API key (Dashboard → Integrations). For Compose you also need Docker with the Compose plugin.
+
+Shared setup:
+
+```bash
+cp .env.example .env
+# Required: CURSOR_API_KEY, CURSOR_SDK_BRIDGE_TOKEN
+# Recommended for Hermes: COMPOSER_API_MODELS=composer-2.5,grok-4.5
+# Optional gateway: LOCAL_API_KEY (clients send this as Bearer)
+
+npm install   # or: bun install
 ```
 
-Point any OpenAI-compatible client at the local base URL and authenticate with any Bearer token your client requires. The app uses the Cursor API key stored locally in the app UI.
+Do not commit `.env` or Cursor keys.
+
+### Option 1: Bare metal
+
+`bun run` loads the repository `.env` for both processes, including quoted values. Two terminals:
+
+```bash
+# terminal 1 — Node bridge
+bun run server:bridge   # :8792
+
+# terminal 2 — Bun API
+bun run server          # :8788 → http://127.0.0.1:8788/v1
+```
+
+Or install the systemd user unit (starts both processes, stops both on exit):
+
+```bash
+# install: systemd-service-files/composer-api.service → ~/.config/systemd/user/
+# and launcher ~/.local/bin/composer-api
+systemctl --user daemon-reload
+systemctl --user enable --now composer-api
+```
+
+See [systemd](#systemd) for restart/status/journal.
+
+### Option 2: Docker Compose
+
+```bash
+export CURSOR_API_KEY=YOUR_API_KEY
+export LOCAL_API_KEY=$(openssl rand -hex 24)
+export CURSOR_SDK_BRIDGE_TOKEN=$(openssl rand -hex 24)
+export CURSOR_SDK_WORKSPACE_HOST=$HOME/projects/my-app
+export CURSOR_SDK_WORKING_DIRECTORY=/workspace
+# optional: COMPOSER_API_MODELS=composer-2.5,grok-4.5
+
+bun run server:up    # docker compose up --build -d
+bun run server:logs  # follow api + bridge
+# bun run server:down
+```
+
+API on host loopback at `127.0.0.1:${PORT:-8788}`; bridge stays on the compose network only (not published). Host project mounts at `/workspace` inside the bridge. To publish beyond loopback, edit the Compose host address and enable gateway mode with a nonempty `LOCAL_API_KEY`.
+
+### Smoke
+
+Same for either method:
+
+```bash
+curl -s http://127.0.0.1:8788/health | jq .
+curl -s http://127.0.0.1:8788/v1/models | jq '.data[].id'
+
+curl http://127.0.0.1:8788/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"composer-2.5","messages":[{"role":"user","content":"ping"}]}'
+```
 
 ```ts
 import OpenAI from "openai";
 
+const apiKey = process.env.CURSOR_API_KEY;
+if (!apiKey) throw new Error("CURSOR_API_KEY is required");
+
 const client = new OpenAI({
-  apiKey: "local",
-  baseURL: "http://127.0.0.1:8787/v1"
+  apiKey,
+  baseURL: "http://127.0.0.1:8788/v1"
 });
 
 const completion = await client.chat.completions.create({
@@ -49,134 +135,131 @@ const completion = await client.chat.completions.create({
 });
 ```
 
+## Model allowlist
+
+Unset `COMPOSER_API_MODELS` advertises the full bundled catalog. Set it in `.env` so `/v1/models` and chat/responses only expose the models you want (Hermes live discovery will otherwise replace a short configured list after the first message):
+
 ```bash
-curl http://127.0.0.1:8787/v1/chat/completions \
-  -H "Authorization: Bearer local" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"composer-2.5","messages":[{"role":"user","content":"Hello"}]}'
+COMPOSER_API_MODELS=composer-2.5,grok-4.5
+systemctl --user restart composer-api
 ```
 
-A Cursor user API key comes from the Cursor Dashboard under Integrations. Enter it in the app; do not commit it to source control.
+Unlisted models return `404 model_not_found` before the bridge is called.
 
-## macOS production release
+## Client Example: Hermes
 
-Release details live in [docs/production.md](docs/production.md).
+```yaml
+# ~/.hermes/config.yaml — prefer hermes config set when possible
+custom_providers:
+  - name: composer-api
+    base_url: http://127.0.0.1:8788/v1
+    key_env: CURSOR_API_KEY   # or LOCAL_API_KEY when gateway mode is on
+    api_mode: chat_completions
+    models:
+      - id: composer-2.5
+      - id: grok-4.5
+```
 
-- Builds are packaged as a signed DMG.
-- DMGs are notarized by Apple.
-- Sparkle is embedded for auto-updates.
-- Versioned DMGs, the latest DMG alias, and `appcast.xml` are uploaded to Cloudflare R2.
-- The Worker serves `/download`, `/releases/...`, and `/appcast.xml`.
+Put the matching secret in `~/.hermes/.env`. Select with:
 
-## Legacy hosted-key flow (optional)
+```text
+/model @custom:composer-api:composer-2.5
+```
 
-The Worker also keeps a backward-compatible hosted-key flow: `POST /api/signup`
-verifies a Cursor API key, stores it encrypted in D1, and mints a separate
-`cmp_...` proxy key usable against per-account endpoints at
-`/u/{account_id}/v1/...`. This flow is optional; the direct Bearer usage above
-is the recommended path. A `cmp_...` token is always resolved against D1 and is
-never forwarded to Cursor as a Cursor key.
+Keep `COMPOSER_API_MODELS` in sync with the Hermes `models:` list.
+
+## Auth modes
+
+Server-wide for any OpenAI-compatible client (curl, SDKs, Hermes, etc.):
+
+1. **Direct** — leave `LOCAL_API_KEY` empty; clients send the Cursor API key as Bearer.
+2. **Gateway** — set both `CURSOR_API_KEY` and `LOCAL_API_KEY`; clients send `LOCAL_API_KEY`, the server forwards `CURSOR_API_KEY` to Cursor.
+
+## systemd
+
+Repo unit: `systemd-service-files/composer-api.service`  
+Repo launcher: `systemd-service-files/composer-api` (starts Node bridge + Bun API; stops both on exit)
+
+```bash
+mkdir -p ~/.config/systemd/user ~/.local/bin
+cp systemd-service-files/composer-api.service ~/.config/systemd/user/
+install -m 0755 systemd-service-files/composer-api ~/.local/bin/composer-api
+systemctl --user daemon-reload
+systemctl --user enable --now composer-api
+```
+
+```bash
+systemctl --user restart composer-api
+systemctl --user status composer-api
+journalctl --user -u composer-api -f
+```
+
+The template assumes a checkout at `%h/composer-api` and loads its `.env`; adjust the unit paths if the repo lives elsewhere.
+
+
+## Environment
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `HOST` | `127.0.0.1` | Bind address |
+| `PORT` | `8788` | API port |
+| `CURSOR_SDK_BRIDGE_URL` | `http://127.0.0.1:8792/sdk` | Bridge endpoint |
+| `CURSOR_SDK_BRIDGE_TOKEN` | empty | Shared secret API → bridge |
+| `CURSOR_SDK_BRIDGE_RUN_TIMEOUT_MS` | `180000` | Per-attempt SDK run timeout |
+| `CURSOR_SDK_BRIDGE_REQUEST_TIMEOUT_MS` | `900000` | End-to-end API → bridge HTTP deadline |
+| `CURSOR_SDK_CONTEXT_WINDOW_REFRESH_MS` | `900000` | Checkpoint context-window refresh interval per model |
+| `SHUTDOWN_GRACE_MS` | `10000` | Graceful API drain period before forced close |
+| `CURSOR_SDK_WORKING_DIRECTORY` | `process.cwd()` | Default agent cwd / tool root |
+| `CURSOR_SDK_CONTEXT_WINDOWS_FILE` | `.cursor-sdk-context-windows.json` | Learned context windows from checkpoints |
+| `COMPOSER_API_MODELS` | empty | Comma-separated allowlist |
+| `CURSOR_API_KEY` | empty | Cursor secret on the server |
+| `LOCAL_API_KEY` | empty | Optional gateway key for clients |
 
 ## Compatibility notes
 
-This project supports text and image input, non-streaming and streaming output, JSON-output prompt constraints, and the common SDK response shapes. Image inputs can be sent as Chat Completions `image_url` parts or Responses `input_image` parts; each resolved image must be 1MB or smaller.
+Supports text and image input, streaming and non-streaming output, JSON-output prompt constraints, and common SDK response shapes. Image inputs via Chat Completions `image_url` or Responses `input_image`; each resolved image must be ≤ 1MB.
 
-These OpenAI features are intentionally rejected because Cursor does not expose equivalent OpenAI controls through this path:
+Intentionally rejected (Cursor does not expose equivalents on this path):
 
 - `n` greater than `1`
-- `logprobs` and `top_logprobs`
+- `logprobs` / `top_logprobs`
 - audio output
 - OpenAI function/tool calls on the Responses API
 - background Responses API jobs
 
-Token usage is estimated from character counts because Cursor's stream does not return OpenAI token accounting on this path. For Composer 2.5, Composer 2.5 Fast, Grok 4.5, and Grok 4.5 Fast, `usage.cost` is estimated from Cursor's published per-million-token pricing.
+Token usage is estimated from character counts. For Composer 2.5 / Fast and Grok 4.5 / Fast, pricing metadata is published in OpenAI-compatible per-token form for clients like Hermes.
 
-## OpenCode
-
-![Composer 2.5 in OpenCode](public/opencode-composer-2-5.webp)
-
-Use the app's **Agent Setup** pane to install the local OpenCode provider. The configured provider points at the local base URL, not the hosted Worker.
-
-## Local development
+## Development
 
 ```bash
 npm install
-npm run db:migrate:local
-npm run dev
+bun run typecheck
+bun run test
+bun run build
 ```
 
-Create a local `.dev.vars` file:
+Scripts:
 
-```bash
-ENCRYPTION_KEY="replace-with-a-long-random-secret"
-WAITLIST_API_TOKEN="standard-agents-waitlist-token"
-CURSOR_SDK_BRIDGE_URL="optional-external-node-sdk-bridge-url"
-CURSOR_SDK_BRIDGE_TOKEN="optional-external-shared-bridge-token"
-CURSOR_SDK_BRIDGE_TIMEOUT_MS="180000"
-CURSOR_CLIENT_VERSION="2.6.22"
-CURSOR_SDK_CLIENT_VERSION="sdk-1.0.13"
-```
+| Script | Action |
+|---|---|
+| `bun run server:bridge` | Node SDK bridge `:8792` |
+| `bun run server` | Bun OpenAI API `:8788` |
+| `bun run server:up` | Compose up |
+| `bun run server:down` | Compose down |
+| `bun run server:logs` | Follow compose logs |
 
-Run the optional SDK local-agent bridge in a local Bun or Node environment:
+## Security
 
-```bash
-npm run sdk:opencode-bridge
-```
-
-The bridge process also accepts `CURSOR_SDK_BRIDGE_RUN_TIMEOUT_MS`; the default is
-`180000`.
-
-Release packages prefer a bundled Node runtime for the local SDK bridge and fall
-back to Bun when Node is unavailable.
-
-## Cloudflare
-
-The Worker uses Cloudflare Vite and D1.
-
-Remote migration and deploy commands require a valid `CLOUDFLARE_API_TOKEN` in
-the shell environment.
-
-```bash
-npm run build
-npm run test
-npm run typecheck
-npm run db:migrate:remote
-npm run deploy
-```
-
-Required secrets:
-
-```bash
-wrangler secret put ENCRYPTION_KEY
-wrangler secret put CURSOR_BACKEND_BASE_URL
-wrangler secret put CURSOR_CHAT_ENDPOINT
-wrangler secret put WAITLIST_API_TOKEN
-```
-
-The OpenCode SDK harness also requires the `0002_sdk_sessions.sql` migration so
-local SDK agent ids can be resumed across Worker isolates.
-
-The Cloudflare deployment uses the container-backed bridge by default. Do not set
-`CURSOR_SDK_BRIDGE_URL` for that path. Only set it when intentionally routing the
-SDK harness to an external Node or Bun bridge instead of the
-`CURSOR_SDK_BRIDGE_CONTAINER` Durable Object binding.
-
-Optional SDK harness overrides:
-
-```bash
-wrangler secret put CURSOR_SDK_CLIENT_VERSION
-wrangler secret put CURSOR_SDK_BRIDGE_URL
-wrangler secret put CURSOR_SDK_BRIDGE_TOKEN
-```
+- Prefer `HOST=127.0.0.1` and gateway auth (`LOCAL_API_KEY`) when exposing beyond a single trusted machine.
+- Do not publish the bridge port.
+- Do not commit `.env` or Cursor keys.
+- This is a single-user local facade, not a multi-tenant hosted API.
 
 ## Research sources
 
-- Cursor SDK package: `@cursor/sdk@1.0.13`
+- Cursor SDK package: `@cursor/sdk@1.0.24`
 - Cursor SDK TypeScript docs: https://cursor.com/docs/api/sdk/typescript
 - Cursor Composer 2.5 changelog: https://cursor.com/changelog/composer-2-5
 - Cursor Grok 4.5 docs: https://cursor.com/docs/models/grok-4-5
 - OpenAI Chat Completions reference: https://developers.openai.com/api/docs/api-reference/chat
 - OpenAI Responses reference: https://developers.openai.com/api/docs/api-reference/responses
-- OpenAI migration guide: https://developers.openai.com/api/docs/guides/migrate-to-responses
-- Cloudflare Containers getting started: https://developers.cloudflare.com/containers/get-started/
-- Cloudflare Containers container class: https://developers.cloudflare.com/containers/container-class/

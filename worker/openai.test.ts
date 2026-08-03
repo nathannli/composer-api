@@ -7,7 +7,10 @@ import {
   chatUsageChunk,
   responseObject,
   toolCallRetryHint,
-  toOpenAiToolCalls
+  toOpenAiToolCalls,
+  modelList,
+  parseModelAllowlist,
+  assertModelAllowed
 } from "./openai";
 
 describe("OpenAI compatibility adapter", () => {
@@ -1665,6 +1668,83 @@ describe("OpenAI compatibility adapter", () => {
         }
       }
     });
+  });
+
+  it("exposes checkpoint-derived context_length on /v1/models entries", () => {
+    // Mirrors pi-cursor-sdk bundled-context-windows (tokenDetails.maxTokens).
+    const byId = Object.fromEntries(
+      ((modelList().data as Array<Record<string, unknown>>) ?? []).map((model) => [model.id, model])
+    );
+    expect(byId["composer-2.5"]).toMatchObject({
+      context_length: 200_000,
+      context_window: 200_000,
+      max_model_len: 200_000,
+      pricing: {
+        prompt: "0.0000005",
+        completion: "0.0000025"
+      }
+    });
+    expect(byId["composer-2.5"]).not.toHaveProperty("cost");
+    expect(byId["gpt-5.3-codex"]).toMatchObject({ context_length: 272_000 });
+    expect(byId["kimi-k2.5"]).toMatchObject({ context_length: 262_000 });
+    expect(byId["grok-4.5"]).toMatchObject({ context_length: 200_000 });
+  });
+
+  it("prefers learned checkpoint windows and applies base-model values to fast variants", () => {
+    const byId = Object.fromEntries(
+      ((modelList({
+        contextWindows: {
+          "composer-2.5": 246_000,
+          "grok-4.5": 384_000,
+          "gpt-5.3-codex": 300_000
+        }
+      }).data as Array<Record<string, unknown>>) ?? []).map((model) => [model.id, model])
+    );
+
+    expect(byId["composer-2.5"]).toMatchObject({ context_length: 246_000 });
+    expect(byId["composer-2.5-fast"]).toMatchObject({ context_length: 246_000 });
+    expect(byId["grok-4.5"]).toMatchObject({ context_length: 384_000 });
+    expect(byId["grok-4.5-fast"]).toMatchObject({ context_length: 384_000 });
+    expect(byId["gpt-5.3-codex"]).toMatchObject({ context_length: 300_000 });
+  });
+
+  it("filters the model catalog to configured ids while preserving catalog order and metadata", () => {
+    const models = modelList({
+      allowedModelIds: ["grok-4.5", "composer-2.5"],
+      contextWindows: { "grok-4.5": 256_000 }
+    }).data as Array<Record<string, unknown>>;
+
+    expect(models.map((model) => model.id)).toEqual(["composer-2.5", "grok-4.5"]);
+    expect(models[1]).toMatchObject({
+      context_length: 256_000,
+      pricing: { prompt: "0.000002", completion: "0.000006" }
+    });
+  });
+
+  it("parses a case-insensitive comma-separated model allowlist", () => {
+    expect(parseModelAllowlist(undefined)).toBeUndefined();
+    expect(parseModelAllowlist("   ")).toBeUndefined();
+    expect(Array.from(parseModelAllowlist(" Grok-4.5, composer-2.5, GROK-4.5 ") ?? [])).toEqual([
+      "grok-4.5",
+      "composer-2.5"
+    ]);
+  });
+
+  it("rejects model requests outside a configured allowlist", () => {
+    const allowed = parseModelAllowlist("composer-2.5,grok-4.5");
+    expect(() => assertModelAllowed("GROK-4.5", allowed)).not.toThrow();
+
+    try {
+      assertModelAllowed("gpt-5.3-codex", allowed);
+      throw new Error("expected model rejection");
+    } catch (error) {
+      expect(error).toMatchObject({
+        message: "The model 'gpt-5.3-codex' does not exist",
+        status: 404,
+        code: "model_not_found",
+        param: "model"
+      });
+    }
   });
 
   it("emits an OpenAI-style final usage chunk for streamed chat", () => {

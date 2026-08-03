@@ -4,12 +4,12 @@ const JSON_HEADERS = {
 
 const CORS_HEADERS = {
   "access-control-allow-origin": "*",
-  "access-control-allow-methods": "GET,POST,OPTIONS",
+  "access-control-allow-methods": "GET,POST,DELETE,OPTIONS,HEAD",
   "access-control-allow-headers": "authorization,content-type,x-api-key,idempotency-key,x-session-affinity,x-opencode-session-id,x-opencode-session",
   "access-control-max-age": "86400"
 };
 
-export function withCors(response: Response): Response {
+function withCors(response: Response): Response {
   const headers = new Headers(response.headers);
   for (const [key, value] of Object.entries(CORS_HEADERS)) {
     headers.set(key, value);
